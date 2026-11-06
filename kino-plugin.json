@@ -1,10 +1,10 @@
 {
   "id": "capibara-traductor",
   "name": "Capibara Traductor",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "apiVersion": 6,
   "entry": "plugin.js",
-  "description": "Mangas, novelas y videomangas de CapibaraTraductor: el hub de scans en español. Inicio con filas separadas, buscador y capítulos.",
+  "description": "Mangas, novelas y videomangas de CapibaraTraductor. Inicio con filas separadas, buscador y capítulos. (fix fetch body v1.0.1)",
   "author": "Hotaru Yume",
   "creator": "hotaruyume",
   "homepage": "https://capibaratraductor.com",

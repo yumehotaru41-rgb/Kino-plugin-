@@ -3,7 +3,7 @@
 Plugin de [Kino](https://kinotvapp.github.io/kino-plugins/) para [CapibaraTraductor](https://capibaratraductor.com/), el hub de scans en español.
 
 - **Autor**: Hotaru Yume (`hotaruyume`)
-- **Versión**: 1.0.0
+- **Versión**: 1.0.1
 - **apiVersion**: 6
 
 ## Qué incluye
@@ -39,6 +39,6 @@ El plugin solo consume las APIs públicas de CapibaraTraductor; no aloja ni redi
 
 ## Cambios
 
-### 1.0.0
+### 1.0.1
 
 - Primera versión: home con filas separadas (vídeos / mangas / novelas), search, browse, episodes y resolve.

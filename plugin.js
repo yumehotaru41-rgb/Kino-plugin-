@@ -2,29 +2,38 @@
 // Fuente: https://capibaratraductor.com
 // Autor: Hotaru Yume (hotaruyume)
 // Separa mangas, novelas y videomangas. Los vídeos salen en Inicio de Kino.
+//
+// v1.0.1: fix kino.fetch body (r.text(), no r.body) — v1.0.0 devolvía home vacío en silencio.
 
 const BASE = "https://capibaratraductor.com";
-const R2 = "https://r2.capibaratraductor.com";
 
 async function api(path, timeoutMs) {
   const r = await kino.fetch(BASE + path, {
     headers: {
       Accept: "application/json",
-      "User-Agent": "Kino-Plugin/1.0 (CapibaraTraductor)",
       Referer: BASE + "/",
     },
     timeoutMs: timeoutMs || 20000,
   });
   if (!r.ok) {
-    const err = new Error("HTTP " + r.status + " " + path);
-    err.status = r.status;
-    throw err;
+    throw kino.error("unavailable", "HTTP " + r.status + " " + path, {
+      userMessage: "Capibara no respondió (" + r.status + "). Revisa la conexión o reintenta.",
+    });
   }
-  const j = JSON.parse(r.body);
+  // Kino: el cuerpo se lee con r.text() / r.json(), NO r.body
+  const text = await r.text();
+  let j;
+  try {
+    j = JSON.parse(text);
+  } catch (e) {
+    throw kino.error("unavailable", "JSON inválido en " + path, {
+      userMessage: "Respuesta inválida de Capibara. Inténtalo de nuevo.",
+    });
+  }
   if (j && j.status === false) {
-    const err = new Error(j.message || j.error || "API error");
-    err.code = j.error;
-    throw err;
+    throw kino.error("unavailable", j.message || j.error || "API error", {
+      userMessage: j.message || "Capibara rechazó la petición.",
+    });
   }
   return j && j.data !== undefined ? j.data : j;
 }
@@ -42,12 +51,13 @@ function clean(s) {
 
 function isNovelType(t) {
   const s = String(t || "").toLowerCase();
-  return s.includes("novel") || s === "novela" || s === "novela_ligera" || s === "light-novel" || s === "light_novel";
-}
-
-function isMangaLike(t) {
-  const s = String(t || "").toLowerCase();
-  return s === "manga" || s === "manhwa" || s === "manhua" || s === "webtoon" || !s;
+  return (
+    s.includes("novel") ||
+    s === "novela" ||
+    s === "novela_ligera" ||
+    s === "light-novel" ||
+    s === "light_novel"
+  );
 }
 
 function posterOf(item) {
@@ -66,19 +76,19 @@ function titleOf(item) {
 
 /** Ref de obra (manga/novela/joint) */
 function workRef(item) {
-  // Prefer joint- id when present
   if (item.id && String(item.id).startsWith("joint-")) {
     return "joint:" + (item.slug || String(item.id).replace(/^joint-/, ""));
   }
   if (item.slug && (item.organization || item.scanSlug || item.scanName)) {
     const org = (item.organization && item.organization.slug) || item.scanSlug || "";
-    const kind = isNovelType((item.manga && item.manga.bookType && item.manga.bookType.code) || item.type)
+    const kind = isNovelType(
+      (item.manga && item.manga.bookType && item.manga.bookType.code) || item.type
+    )
       ? "novel"
       : "manga";
     return "work:" + kind + ":" + org + ":" + item.slug;
   }
   if (item.url) {
-    // /scan/manga/slug or /writings/.../light-novel/slug or /joint/manga/slug
     const m = String(item.url).match(
       /\/(?:joint\/manga\/|([^/]+)\/manga\/|writings\/([^/]+)\/(?:light-)?novel\/)([^/?#]+)/i
     );
@@ -107,7 +117,6 @@ function parseRef(ref) {
   }
   if (ref.startsWith("slug:")) return { kind: "slug", slug: ref.slice(5) };
   if (ref.startsWith("ch:")) {
-    // ch:joint:slug:number  or  ch:work:type:org:slug:number
     const rest = ref.slice(3);
     if (rest.startsWith("joint:")) {
       const p = rest.slice(6).split(":");
@@ -122,15 +131,12 @@ function parseRef(ref) {
 
 function itemFromWork(w, forceKind) {
   const typeCode =
-    (w.manga && w.manga.bookType && w.manga.bookType.code) ||
-    w.workType ||
-    w.type ||
-    "";
+    (w.manga && w.manga.bookType && w.manga.bookType.code) || w.workType || w.type || "";
   const novel = forceKind === "novel" || isNovelType(typeCode);
   const ref = workRef(w);
   return {
     id: String(w.id || w.mangaId || ref),
-    ref,
+    ref: ref,
     title: titleOf(w),
     kind: "series",
     poster: posterOf(w),
@@ -140,7 +146,12 @@ function itemFromWork(w, forceKind) {
         (w.manga && (w.manga.shortDescription || w.manga.description)) ||
         ""
     ).slice(0, 400),
-    genres: (w.genres || []).map((g) => (typeof g === "string" ? g : g.name)).filter(Boolean).slice(0, 8),
+    genres: (w.genres || [])
+      .map(function (g) {
+        return typeof g === "string" ? g : g.name;
+      })
+      .filter(Boolean)
+      .slice(0, 8),
     badges: novel ? ["Novela"] : typeCode && typeCode !== "manga" ? [String(typeCode)] : undefined,
     adult: !!(w.isNSFW || (w.manga && w.manga.isNSFW)),
   };
@@ -174,109 +185,140 @@ function itemFromSearchObra(o) {
   };
 }
 
+function logErr(where, e) {
+  try {
+    kino.log(where, (e && (e.message || e.code || String(e))) || "error");
+  } catch (_) {}
+}
+
 // ---------- home ----------
 
 export async function home() {
   const rows = [];
+  const errors = [];
 
-  // Videos first so they appear in Kino home
+  // Videos first (appear in Kino home)
   try {
     const vids = await api("/api/videos?limit=18&page=1");
-    const items = (vids.items || vids || []).filter((v) => v.youtubeId).map(itemFromVideo);
+    const items = (vids.items || vids || [])
+      .filter(function (v) {
+        return v.youtubeId;
+      })
+      .map(itemFromVideo);
     if (items.length) {
       rows.push({
         id: "videos",
         title: "Últimos videomangas",
-        items,
+        items: items,
         ref: "browse:videos",
         genre: "anime",
       });
     }
   } catch (e) {
-    kino.log && kino.log("videos home: " + (e.message || e));
+    logErr("home.videos", e);
+    errors.push("videos: " + (e.message || e));
   }
 
-  // Featured / trending mangas
+  // Featured mangas
   try {
-    const feat = await api("/api/landing/featured-manga?limit=18&page=1&nsfw=false&sort=daily&mix=1");
+    const feat = await api(
+      "/api/landing/featured-manga?limit=18&page=1&nsfw=false&sort=daily&mix=1"
+    );
     const list = Array.isArray(feat) ? feat : feat.items || [];
-    const items = list.map((w) => itemFromWork(w, "manga"));
+    const items = list.map(function (w) {
+      return itemFromWork(w, "manga");
+    });
     if (items.length) {
       rows.push({
         id: "featured-manga",
         title: "Mangas destacados",
-        items,
+        items: items,
         ref: "browse:manga-popular",
         genre: "anime",
       });
     }
   } catch (e) {
-    kino.log && kino.log("featured: " + (e.message || e));
+    logErr("home.featured", e);
+    errors.push("featured: " + (e.message || e));
   }
 
   // Trending
   try {
     const tr = await api("/api/landing/trending?limit=18&nsfw=false");
     const list = Array.isArray(tr) ? tr : tr.items || [];
-    const items = list.map((w) => itemFromWork(w));
+    const items = list.map(function (w) {
+      return itemFromWork(w);
+    });
     if (items.length) {
       rows.push({
         id: "trending",
         title: "Tendencias",
-        items,
+        items: items,
         ref: "browse:trending",
         genre: "anime",
       });
     }
-  } catch (_) {}
+  } catch (e) {
+    logErr("home.trending", e);
+  }
 
-  // Latest mangas (manga-custom)
+  // Latest mangas
   try {
     const mc = await api("/api/manga-custom?order=latest&limit=18&page=1&nsfw=false");
-    const list = (mc.items || []).filter((w) => {
+    const list = (mc.items || []).filter(function (w) {
       const code = (w.manga && w.manga.bookType && w.manga.bookType.code) || "";
       return !isNovelType(code);
     });
-    const items = list.map((w) => itemFromWork(w, "manga"));
+    const items = list.map(function (w) {
+      return itemFromWork(w, "manga");
+    });
     if (items.length) {
       rows.push({
         id: "latest-manga",
         title: "Mangas recientes",
-        items,
+        items: items,
         ref: "browse:manga-latest",
         genre: "anime",
       });
     }
   } catch (e) {
-    kino.log && kino.log("manga-custom: " + (e.message || e));
+    logErr("home.manga-custom", e);
+    errors.push("manga-custom: " + (e.message || e));
   }
 
   // Novelas
   try {
-    const mc = await api("/api/manga-custom?order=latest&limit=24&page=1&nsfw=false");
-    const list = (mc.items || []).filter((w) => {
+    const mc = await api("/api/manga-custom?order=latest&limit=30&page=1&nsfw=false");
+    const list = (mc.items || []).filter(function (w) {
       const code = (w.manga && w.manga.bookType && w.manga.bookType.code) || "";
       return isNovelType(code);
     });
-    const items = list.map((w) => itemFromWork(w, "novel"));
+    const items = list.map(function (w) {
+      return itemFromWork(w, "novel");
+    });
     if (items.length) {
       rows.push({
         id: "novels",
         title: "Novelas",
-        items,
+        items: items,
         ref: "browse:novels",
         genre: "series",
       });
     }
-  } catch (_) {}
+  } catch (e) {
+    logErr("home.novels", e);
+  }
 
-  // Popular scans' covers as extra row of works
+  // Scans populares
   try {
     const scans = await api("/api/landing/scans?sort=popular&limit=6&page=1");
     const items = [];
     const raw = scans.items || scans || [];
-    for (const sc of raw) {
-      for (const c of sc.covers || []) {
+    for (let si = 0; si < raw.length; si++) {
+      const sc = raw[si];
+      const covers = sc.covers || [];
+      for (let ci = 0; ci < covers.length; ci++) {
+        const c = covers[ci];
         items.push({
           id: String(c.id),
           ref: workRef({ url: c.url, title: c.title, cover: c.cover, id: c.id }),
@@ -292,12 +334,24 @@ export async function home() {
       rows.push({
         id: "from-scans",
         title: "De scans populares",
-        items,
+        items: items,
         genre: "anime",
       });
     }
-  } catch (_) {}
+  } catch (e) {
+    logErr("home.scans", e);
+  }
 
+  if (!rows.length) {
+    throw kino.error(
+      "unavailable",
+      errors.length ? errors.join(" | ") : "home vacío",
+      {
+        userMessage:
+          "No se pudo cargar el catálogo de Capibara. Comprueba que aprobaste el host capibaratraductor.com e inténtalo de nuevo.",
+      }
+    );
+  }
   return rows;
 }
 
@@ -309,9 +363,13 @@ export async function browse(ref, cursor) {
 
   if (ref === "browse:videos") {
     const data = await api("/api/videos?limit=" + limit + "&page=" + page);
-    const items = (data.items || []).filter((v) => v.youtubeId).map(itemFromVideo);
+    const items = (data.items || [])
+      .filter(function (v) {
+        return v.youtubeId;
+      })
+      .map(itemFromVideo);
     const next = page < (data.maxPage || 1) ? String(page + 1) : undefined;
-    return { items, next };
+    return { items: items, next: next };
   }
 
   if (ref === "browse:manga-popular" || ref === "browse:manga-latest") {
@@ -320,13 +378,15 @@ export async function browse(ref, cursor) {
       "/api/manga-custom?order=" + order + "&limit=" + limit + "&page=" + page + "&nsfw=false"
     );
     const items = (data.items || [])
-      .filter((w) => {
+      .filter(function (w) {
         const code = (w.manga && w.manga.bookType && w.manga.bookType.code) || "";
         return !isNovelType(code);
       })
-      .map((w) => itemFromWork(w, "manga"));
+      .map(function (w) {
+        return itemFromWork(w, "manga");
+      });
     const next = page < (data.maxPage || 1) ? String(page + 1) : undefined;
-    return { items, next };
+    return { items: items, next: next };
   }
 
   if (ref === "browse:novels") {
@@ -334,25 +394,36 @@ export async function browse(ref, cursor) {
       "/api/manga-custom?order=latest&limit=" + limit + "&page=" + page + "&nsfw=false"
     );
     const items = (data.items || [])
-      .filter((w) => {
+      .filter(function (w) {
         const code = (w.manga && w.manga.bookType && w.manga.bookType.code) || "";
         return isNovelType(code);
       })
-      .map((w) => itemFromWork(w, "novel"));
+      .map(function (w) {
+        return itemFromWork(w, "novel");
+      });
     const next = page < (data.maxPage || 1) ? String(page + 1) : undefined;
-    return { items, next };
+    return { items: items, next: next };
   }
 
   if (ref === "browse:trending") {
     const data = await api("/api/landing/trending?limit=" + limit + "&nsfw=false");
     const list = Array.isArray(data) ? data : data.items || [];
-    return { items: list.map((w) => itemFromWork(w)) };
+    return {
+      items: list.map(function (w) {
+        return itemFromWork(w);
+      }),
+    };
   }
 
-  // fallback featured
-  const feat = await api("/api/landing/featured-manga?limit=" + limit + "&page=" + page + "&nsfw=false&sort=daily&mix=1");
+  const feat = await api(
+    "/api/landing/featured-manga?limit=" + limit + "&page=" + page + "&nsfw=false&sort=daily&mix=1"
+  );
   const list = Array.isArray(feat) ? feat : feat.items || [];
-  return { items: list.map((w) => itemFromWork(w)) };
+  return {
+    items: list.map(function (w) {
+      return itemFromWork(w);
+    }),
+  };
 }
 
 // ---------- search ----------
@@ -365,25 +436,30 @@ export async function search(query) {
   const obras = data.obras || [];
   const out = [];
 
-  // Prefer novels / mangas separation in order
-  const novels = obras.filter((o) => isNovelType(o.type));
-  const mangas = obras.filter((o) => !isNovelType(o.type));
+  const novels = obras.filter(function (o) {
+    return isNovelType(o.type);
+  });
+  const mangas = obras.filter(function (o) {
+    return !isNovelType(o.type);
+  });
 
-  for (const o of mangas.concat(novels)) {
-    out.push(itemFromSearchObra(o));
-  }
+  for (let i = 0; i < mangas.length; i++) out.push(itemFromSearchObra(mangas[i]));
+  for (let i = 0; i < novels.length; i++) out.push(itemFromSearchObra(novels[i]));
 
-  // Also search videos by title if few results
   if (out.length < 8) {
     try {
       const vids = await api("/api/videos?limit=30&page=1");
       const ql = q.toLowerCase();
-      for (const v of vids.items || []) {
+      const list = vids.items || [];
+      for (let i = 0; i < list.length; i++) {
+        const v = list[i];
         if (!v.youtubeId) continue;
         const t = (v.title || "") + " " + ((v.work && v.work.title) || "");
-        if (t.toLowerCase().includes(ql)) out.push(itemFromVideo(v));
+        if (t.toLowerCase().indexOf(ql) !== -1) out.push(itemFromVideo(v));
       }
-    } catch (_) {}
+    } catch (e) {
+      logErr("search.videos", e);
+    }
   }
 
   return out.slice(0, 50);
@@ -401,20 +477,16 @@ async function loadMangaBySlug(slug) {
 
 export async function episodes(ref) {
   const p = parseRef(ref);
-  if (!p) throw new Error("Ref inválido");
+  if (!p) {
+    throw kino.error("invalid_ref", "Ref inválido", {
+      userMessage: "No se pudo abrir esta obra.",
+    });
+  }
 
   if (p.kind === "video") {
-    // single "episode" = the video itself
     return {
       series: { title: "Vídeo" },
-      episodes: [
-        {
-          season: 1,
-          number: 1,
-          ref: ref,
-          title: "Reproducir",
-        },
-      ],
+      episodes: [{ season: 1, number: 1, ref: ref, title: "Reproducir" }],
     };
   }
 
@@ -426,36 +498,40 @@ export async function episodes(ref) {
     joint = true;
     data = await loadJoint(slug);
   } else if (p.kind === "work" || p.kind === "slug") {
-    // Try joint first (many popular titles are joint)
     try {
       data = await loadJoint(slug);
       joint = true;
-    } catch (_) {
+    } catch (e) {
       data = await loadMangaBySlug(slug);
       joint = false;
     }
   } else if (p.kind === "id") {
-    // best effort
     try {
       data = await loadJoint(String(p.id));
       joint = true;
       slug = data.slug || String(p.id);
-    } catch (_) {
-      throw new Error("No se pudo cargar la obra");
+    } catch (e) {
+      throw kino.error("unavailable", "obra no encontrada", {
+        userMessage: "No se pudo cargar la obra en Capibara.",
+      });
     }
   } else {
-    throw new Error("Tipo de ref no soportado para episodios");
+    throw kino.error("invalid_ref", "tipo no soportado", {
+      userMessage: "Este título no se puede listar por capítulos.",
+    });
   }
 
   const title = titleOf(data);
   const poster = posterOf(data);
   const overview = clean(data.shortDescription || data.description || "").slice(0, 600);
-  const chapters = (data.chapters || []).filter((c) => !c.isUnreleased && !c.hiddenAt);
+  const chapters = (data.chapters || []).filter(function (c) {
+    return !c.isUnreleased && !c.hiddenAt;
+  });
+  chapters.sort(function (a, b) {
+    return Number(a.number) - Number(b.number);
+  });
 
-  // sort ascending by number
-  chapters.sort((a, b) => Number(a.number) - Number(b.number));
-
-  const episodes = chapters.slice(-500).map((c, idx) => {
+  const episodesList = chapters.slice(-500).map(function (c, idx) {
     const num = Number(c.number);
     const chRef = joint
       ? "ch:joint:" + slug + ":" + c.number
@@ -464,19 +540,23 @@ export async function episodes(ref) {
       season: 1,
       number: Number.isFinite(num) ? num : idx + 1,
       ref: chRef,
-      title: clean(c.title || ("Cap. " + c.number)),
+      title: clean(c.title || "Cap. " + c.number),
       airDate: c.releasedAt ? String(c.releasedAt).slice(0, 10) : undefined,
     };
   });
 
   return {
     series: {
-      title,
-      poster,
-      overview,
-      genres: (data.genres || []).map((g) => (typeof g === "string" ? g : g.name)).filter(Boolean),
+      title: title,
+      poster: poster,
+      overview: overview,
+      genres: (data.genres || [])
+        .map(function (g) {
+          return typeof g === "string" ? g : g.name;
+        })
+        .filter(Boolean),
     },
-    episodes,
+    episodes: episodesList,
   };
 }
 
@@ -484,12 +564,19 @@ export async function episodes(ref) {
 
 export async function resolve(ref) {
   const p = parseRef(ref);
-  if (!p) throw new Error("Ref inválido");
+  if (!p) {
+    throw kino.error("invalid_ref", "Ref inválido", {
+      userMessage: "No se puede reproducir este ítem.",
+    });
+  }
 
-  // YouTube video
   if (p.kind === "video") {
     const id = p.youtubeId;
-    if (!id) throw new Error("Sin youtubeId");
+    if (!id) {
+      throw kino.error("unavailable", "sin youtubeId", {
+        userMessage: "Este vídeo no tiene ID de YouTube.",
+      });
+    }
     return {
       url: "https://www.youtube.com/watch?v=" + id,
       mime: "text/html",
@@ -501,13 +588,17 @@ export async function resolve(ref) {
     };
   }
 
-  // Chapter pages — try to get image list; if only teaser, fall back to chapter page URL
   if (p.kind === "chapter") {
     const slug = p.slug;
     const number = p.number;
     let pagesPath;
     if (p.joint) {
-      pagesPath = "/api/joint/" + encodeURIComponent(slug) + "/chapter/" + encodeURIComponent(number) + "/pages";
+      pagesPath =
+        "/api/joint/" +
+        encodeURIComponent(slug) +
+        "/chapter/" +
+        encodeURIComponent(number) +
+        "/pages";
     } else {
       pagesPath =
         "/api/manga-custom/" +
@@ -522,60 +613,25 @@ export async function resolve(ref) {
       const data = await api(pagesPath);
       pages = Array.isArray(data) ? data : data.pages || data.items || [];
     } catch (e) {
-      kino.log && kino.log("pages: " + (e.message || e));
+      logErr("resolve.pages", e);
     }
 
-    // Collect distinct image URLs (API often repeats a cover; real pages may need ph decrypt)
     const urls = [];
-    const seen = new Set();
-    for (const pg of pages) {
-      const u = pg.imageUrl || pg.url;
-      if (u && !seen.has(u)) {
-        seen.add(u);
+    const seen = {};
+    for (let i = 0; i < pages.length; i++) {
+      const u = pages[i].imageUrl || pages[i].url;
+      if (u && !seen[u]) {
+        seen[u] = true;
         urls.push(u);
       }
     }
 
-    if (urls.length > 1) {
-      // Multiple pages → first as main, rest as alternatives (Kino plays single stream;
-      // for full reader a screen plugin would be better)
-      return {
-        url: urls[0],
-        mime: "image/webp",
-        headers: { Referer: BASE + "/" },
-        label: "Página 1/" + urls.length,
-        alternatives: urls.slice(1, 20).map((u, i) => ({
-          url: u,
-          mime: "image/webp",
-          label: "Pág. " + (i + 2),
-        })),
-      };
-    }
-
-    if (urls.length === 1) {
-      // Single image — still return it; user can open site for full chapter
-      return {
-        url: urls[0],
-        mime: "image/webp",
-        headers: { Referer: BASE + "/" },
-        label: "Portada / página",
-        alternatives: [
-          {
-            url:
-              BASE +
-              (p.joint
-                ? "/joint/manga/" + encodeURIComponent(slug) + "/chapters/" + encodeURIComponent(number)
-                : "/" + (p.org || "") + "/manga/" + encodeURIComponent(slug) + "/chapters/" + encodeURIComponent(number)),
-            mime: "text/html",
-            label: "Abrir en Capibara",
-          },
-        ],
-      };
-    }
-
-    // Fallback: open chapter on the site
-    const pageUrl = p.joint
-      ? BASE + "/joint/manga/" + encodeURIComponent(slug) + "/chapters/" + encodeURIComponent(number)
+    const siteUrl = p.joint
+      ? BASE +
+        "/joint/manga/" +
+        encodeURIComponent(slug) +
+        "/chapters/" +
+        encodeURIComponent(number)
       : BASE +
         "/" +
         (p.org || "manga") +
@@ -583,21 +639,47 @@ export async function resolve(ref) {
         encodeURIComponent(slug) +
         "/chapters/" +
         encodeURIComponent(number);
+
+    if (urls.length > 1) {
+      return {
+        url: urls[0],
+        mime: "image/webp",
+        headers: { Referer: BASE + "/" },
+        label: "Página 1/" + urls.length,
+        alternatives: urls.slice(1, 20).map(function (u, i) {
+          return { url: u, mime: "image/webp", label: "Pág. " + (i + 2) };
+        }).concat([{ url: siteUrl, mime: "text/html", label: "Abrir en Capibara" }]),
+      };
+    }
+
+    if (urls.length === 1) {
+      return {
+        url: urls[0],
+        mime: "image/webp",
+        headers: { Referer: BASE + "/" },
+        label: "Imagen",
+        alternatives: [{ url: siteUrl, mime: "text/html", label: "Abrir en Capibara" }],
+      };
+    }
+
     return {
-      url: pageUrl,
+      url: siteUrl,
       mime: "text/html",
       label: "Capítulo en Capibara",
     };
   }
 
-  // Opening a work directly → first chapter if possible
   if (p.kind === "joint" || p.kind === "work" || p.kind === "slug") {
     const ep = await episodes(ref);
     if (ep.episodes && ep.episodes.length) {
       return resolve(ep.episodes[0].ref);
     }
-    throw new Error("Sin capítulos");
+    throw kino.error("unavailable", "sin capítulos", {
+      userMessage: "Esta obra no tiene capítulos publicados.",
+    });
   }
 
-  throw new Error("No se puede resolver: " + ref);
+  throw kino.error("invalid_ref", "no se puede resolver: " + ref, {
+    userMessage: "No se puede reproducir este título.",
+  });
 }
