@@ -1,44 +1,49 @@
 # Kino Plugin — Capibara Traductor
 
-Plugin de [Kino](https://kinotvapp.github.io/kino-plugins/) para [CapibaraTraductor](https://capibaratraductor.com/), el hub de scans en español.
+Plugin de [Kino](https://kinotvapp.github.io/kino-plugins/) para [CapibaraTraductor](https://capibaratraductor.com/).
 
 - **Autor**: Hotaru Yume (`hotaruyume`)
-- **Versión**: 1.0.1
-- **apiVersion**: 6
+- **Versión**: 2.0.0
+- **apiVersion**: 14 (Kino 0.9.74+)
 
-## Qué incluye
+## Qué hace (camino completo)
 
-- **Inicio**
-  - Últimos **videomangas** (YouTube) — visibles también en el Inicio general de Kino
-  - Mangas destacados y tendencias
-  - Mangas recientes
-  - **Novelas** en fila aparte
-  - Obras de scans populares
-- **Búsqueda** por título (mangas, novelas y, si hay pocos resultados, vídeos)
-- **Capítulos** de mangas/novelas (joint y manga-custom)
-- **Resolución**
-  - Vídeos → YouTube
-  - Capítulos → páginas de imagen cuando la API las expone; si no, enlace a Capibara
+| Tipo | Inicio / búsqueda | Lectura / play |
+|------|-------------------|----------------|
+| **Videomangas** | Fila propia en Inicio | Resolve → YouTube (el player de Kino puede no aceptar HTML; se listan igual) |
+| **Mangas** | Filas destacados / tendencias / recientes | **Pantalla Capibara**: lista de capítulos → páginas **descifradas** (tira vertical) |
+| **Novelas** | Fila aparte | Listado; el cuerpo de texto de capítulo sigue dependiendo de la API de writings |
+
+### Lector de manga
+
+1. Menú de Kino → **Capibara** (pantalla del plugin), o Inicio de Kino para el catálogo.
+2. Elige una obra → capítulos → toca un capítulo.
+3. El plugin pide `/api/.../pages`, aplica el descifrado del cliente de Capibara (`ls` + token de la home + `ph`) y muestra las imágenes reales de `r2.capibaratraductor.com`.
 
 ## Instalación
 
-En Kino: **Ajustes → Plugins → +** e introduce el repositorio (`owner/repo`) o la URL del `kino-plugin.json`.
+Ajustes → Plugins → `owner/repo` o la URL del `kino-plugin.json`.  
+Aprueba hosts: `capibaratraductor.com`, `r2.capibaratraductor.com`.
 
-Requiere hosts aprobados: `capibaratraductor.com`, `r2.capibaratraductor.com` y dominios de YouTube/miniaturas.
-
-## Publicar
-
-1. Crea un repositorio público en GitHub.
-2. Sube `kino-plugin.json`, `plugin.js`, `icon.png` y este `README.md`.
-3. Añade el topic **`kino-plugin`**.
-4. En Kino instala con `tu-usuario/tu-repo`.
+Publica el repo con el topic **`kino-plugin`**.
 
 ## Nota
 
-El plugin solo consume las APIs públicas de CapibaraTraductor; no aloja ni redistribuye contenido. Respeta los términos del sitio y de los scans. Algunas páginas de capítulo usan cifrado de imagen en el cliente web; en esos casos el plugin ofrece el enlace a la web.
+Solo usa APIs públicas de CapibaraTraductor. No redistribuye archivos. Respeta los términos del sitio y de cada scan.
 
 ## Cambios
 
+### 2.0.0
+
+- Descifrado de páginas de manga (`ph` / `ls` / token HTML).
+- Pantalla de lectura (apiVersion 14) con tira de imágenes y cap. anterior/siguiente.
+- Catálogo separado: vídeos, mangas, novelas.
+- Corrección del cuerpo de `kino.fetch` (`r.text()`).
+
 ### 1.0.1
 
-- Primera versión: home con filas separadas (vídeos / mangas / novelas), search, browse, episodes y resolve.
+- Fix silencioso de home vacío (`r.body` → `r.text()`).
+
+### 1.0.0
+
+- Primera versión solo catálogo.
